@@ -4,7 +4,7 @@ import os
 import sys
 import re
 sys.path.append('Matterport_Simulator/build/')
-import MatterSim
+# import MatterSim
 import string
 import json
 import time
@@ -348,7 +348,7 @@ def new_simulator():
     sim.setCameraResolution(WIDTH, HEIGHT)
     sim.setCameraVFOV(math.radians(VFOV))
     sim.setDiscretizedViewingAngles(True)
-    sim.init()
+    sim.initialize()
 
     return sim
 
@@ -359,13 +359,13 @@ def get_point_angle_feature(baseViewId=0):
     base_heading = (baseViewId % 12) * math.radians(30)
     for ix in range(36):
         if ix == 0:
-            sim.newEpisode('ZMojNkEp431', '2f4d90acd4024c269fb0efe49a8ac540', 0, math.radians(-30))
+            sim.newEpisode(['ZMojNkEp431'], ['2f4d90acd4024c269fb0efe49a8ac540'], [0], [math.radians(-30)])
         elif ix % 12 == 0:
-            sim.makeAction(0, 1.0, 1.0)
+            sim.makeAction([0], [1.0], [1.0])
         else:
-            sim.makeAction(0, 1.0, 0)
+            sim.makeAction([0], [1.0], [0])
 
-        state = sim.getState()
+        state = sim.getState()[0]
         assert state.viewIndex == ix
 
         heading = state.heading - base_heading
@@ -468,11 +468,12 @@ def clever_pad_sequence(sequences, batch_first=True, padding_value=0):
     return out_tensor
 
 import torch
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def length2mask(length, size=None):
     batch_size = len(length)
     size = int(max(length)) if size is None else size
     mask = (torch.arange(size, dtype=torch.int64).unsqueeze(0).repeat(batch_size, 1)
-                > (torch.LongTensor(length) - 1).unsqueeze(1)).cuda()
+                > (torch.LongTensor(length) - 1).unsqueeze(1)).to(device)
     return mask
 
 def average_length(path2inst):
@@ -491,7 +492,7 @@ def tile_batch(tensor, multiplier):
 def viewpoint_drop_mask(viewpoint, seed=None, drop_func=None):
     local_seed = hash(viewpoint) ^ seed
     torch.random.manual_seed(local_seed)
-    drop_mask = drop_func(torch.ones(2048).cuda())
+    drop_mask = drop_func(torch.ones(2048).to(device))
     return drop_mask
 
 

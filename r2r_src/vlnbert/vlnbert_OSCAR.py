@@ -185,7 +185,7 @@ class BertImgModel(BertPreTrainedModel):
         self.img_dim = config.img_feature_dim
         logger.info('BertImgModel Image Dimension: {}'.format(self.img_dim))
 
-        self.apply(self.init_weights)
+        self.apply(self._init_weights)
 
     def forward(self, mode, input_ids, token_type_ids=None, attention_mask=None,
             position_ids=None, img_feats=None):
