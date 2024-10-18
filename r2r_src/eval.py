@@ -48,7 +48,7 @@ class Evaluation(object):
                 near_d = d
         return near_id
 
-    def _score_item(self, instr_id, path):
+    def _score_item(self, instr_id, path, confidence):
         ''' Calculate error based on the final position in trajectory, and also
             the closest position (oracle stopping rule).
             The path contains [view_id, angle, vofv] '''
@@ -58,6 +58,7 @@ class Evaluation(object):
         goal = gt['path'][-1]
         final_position = path[-1][0]  # the first of [view_id, angle, vofv]
         nearest_position = self._get_nearest(gt['scan'], goal, path)
+        self.scores['instr_ids'].append(instr_id)
         self.scores['nav_errors'].append(self.distances[gt['scan']][final_position][goal])
         self.scores['oracle_errors'].append(self.distances[gt['scan']][nearest_position][goal])
         self.scores['trajectory_steps'].append(len(path)-1)
@@ -70,6 +71,7 @@ class Evaluation(object):
         self.scores['shortest_lengths'].append(
             self.distances[gt['scan']][start][goal]
         )
+        self.scores['confidences'].append(confidence)
 
     def score(self, output_file):
         ''' Evaluate each agent trajectory based on how close it got to the goal location '''
@@ -86,7 +88,7 @@ class Evaluation(object):
             # Check against expected ids
             if item['instr_id'] in instr_ids:
                 instr_ids.remove(item['instr_id'])
-                self._score_item(item['instr_id'], item['trajectory'])
+                self._score_item(item['instr_id'], item['trajectory'], item['confidence'])
 
         if 'train' not in self.splits:  # Exclude the training from this. (Because training eval may be partial)
             assert len(instr_ids) == 0, 'Missing %d of %d instruction ids from %s - not in %s'\

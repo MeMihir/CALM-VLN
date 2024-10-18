@@ -40,7 +40,7 @@ class BaseAgent(object):
             json.dump(output, f)
 
     def get_results(self):
-        output = [{'instr_id': k, 'trajectory': v} for k, v in self.results.items()]
+        output = [{'instr_id': k, 'trajectory': v[0], 'confidence': v[1]} for k, v in self.results.items()]
         return output
 
     def rollout(self, **args):
@@ -63,7 +63,7 @@ class BaseAgent(object):
             for i in range(iters):
                 for traj in self.rollout(**kwargs):
                     self.loss = 0
-                    self.results[traj['instr_id']] = traj['path']
+                    self.results[traj['instr_id']] = (traj['path'], traj['confidence_scores'])
         else:   # Do a full round
             while True:
                 for traj in self.rollout(**kwargs):
@@ -71,7 +71,7 @@ class BaseAgent(object):
                         looped = True
                     else:
                         self.loss = 0
-                        self.results[traj['instr_id']] = traj['path']
+                        self.results[traj['instr_id']] = (traj['path'], traj['confidence_scores'])
                 if looped:
                     break
 
@@ -265,6 +265,7 @@ class Seq2SeqAgent(BaseAgent):
         traj = [{
             'instr_id': ob['instr_id'],
             'path': [(ob['viewpoint'], ob['heading'], ob['elevation'])],
+            'confidence_scores': [] 
         } for ob in perm_obs]
 
         # Init the reward shaping
@@ -309,8 +310,11 @@ class Seq2SeqAgent(BaseAgent):
                             'action_feats':       input_a_t,
                             # 'pano_feats':         f_t,
                             'cand_feats':         candidate_feat}
-            h_t, logit = self.vln_bert(**visual_inputs)
+            h_t, logit, confidence_score = self.vln_bert(**visual_inputs)
             hidden_states.append(h_t)
+            for i, ob in enumerate(perm_obs):
+                if not ended[i]:
+                    traj[i]['confidence_scores'].append(confidence_score[i].item())
 
             # Mask outputs where agent can't move forward
             # Here the logit is [b, max_candidate]
@@ -419,7 +423,10 @@ class Seq2SeqAgent(BaseAgent):
                             'action_feats':       input_a_t,
                             # 'pano_feats':         f_t,
                             'cand_feats':         candidate_feat}
-            last_h_, _ = self.vln_bert(**visual_inputs)
+            last_h_, _, confidence_score = self.vln_bert(**visual_inputs)
+            for i, ob in enumerate(perm_obs):
+                if not ended[i]:
+                    traj[i]['confidence_scores'].append(confidence_score[i].item())
 
             rl_loss = 0.
 
@@ -469,6 +476,7 @@ class Seq2SeqAgent(BaseAgent):
             self.losses.append(0.)
         else:
             self.losses.append(self.loss.item() / self.episode_len)  # This argument is useless.
+        # print("TRAJ 0:", traj[0], traj[0]["confidence_scores"])
 
         return traj
 
