@@ -13,6 +13,7 @@ from env import R2RBatch
 from agent import Seq2SeqAgent
 from eval import Evaluation
 from param import args
+import pandas as pd
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -162,11 +163,12 @@ def valid(train_env, tok, val_envs={}):
         result = agent.get_results()
 
         if env_name != '':
-            score_summary, _ = evaluator.score(result)
+            score_summary, scores_dict = evaluator.score(result)
             loss_str = "Env name: %s" % env_name
             for metric,val in score_summary.items():
                 loss_str += ', %s: %.4f' % (metric, val)
             print(loss_str)
+            pd.DataFrame(scores_dict).to_csv(os.path.join(log_dir, "scores_%s.csv" % env_name))
 
         if args.submit:
             json.dump(
