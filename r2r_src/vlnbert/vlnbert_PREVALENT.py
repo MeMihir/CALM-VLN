@@ -379,6 +379,7 @@ class VLNBert(BertPreTrainedModel):
         self.addlayer = nn.ModuleList(
             [LXRTXLayer(config) for _ in range(self.vl_layers)])
         self.vision_encoder = VisionEncoder(self.config.img_feature_dim, self.config)
+        self.confidence_layer = nn.Linear(config.hidden_size, 1)
         self.apply(self._init_weights)
 
     def forward(self, mode, input_ids, token_type_ids=None,
@@ -436,6 +437,8 @@ class VLNBert(BertPreTrainedModel):
             sequence_output = lang_output
             pooled_output = self.pooler(sequence_output)
 
+            confidence_score = torch.sigmoid(self.confidence_layer(pooled_output)).squeeze(-1)
+
             language_state_scores = language_attention_scores.mean(dim=1)
             visual_action_scores = visual_attention_scores.mean(dim=1)
 
@@ -446,4 +449,4 @@ class VLNBert(BertPreTrainedModel):
             attended_language = (language_attention_probs * text_embeds[:, 1:, :]).sum(1)
             attended_visual = (visual_attention_probs * img_embedding_output).sum(1)
 
-            return pooled_output, visual_action_scores, attended_language, attended_visual
+            return pooled_output, visual_action_scores, attended_language, attended_visual, confidence_score
