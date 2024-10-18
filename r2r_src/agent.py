@@ -310,11 +310,28 @@ class Seq2SeqAgent(BaseAgent):
                             'action_feats':       input_a_t,
                             # 'pano_feats':         f_t,
                             'cand_feats':         candidate_feat}
-            h_t, logit, confidence_score = self.vln_bert(**visual_inputs)
+            h_t, logit, confidence_scores = self.vln_bert(**visual_inputs)
+            mc_outputs = self.vln_bert.monte_carlo_forward(**visual_inputs, num_samples=self.vln_bert.mc_dropout_samples)
+            
+            logits = torch.stack([output[1] for output in mc_outputs])
+            mean_logits = logits.mean(dim=0)
+            var_logits = logits.var(dim=0)
+            
+            # Calculate confidence score using predictive entropy
+            probs = F.softmax(mean_logits, dim=-1)
+            entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
+            confidence_score = 1 - (entropy / torch.log(torch.tensor(probs.shape[-1])))
+            
+            # Incorporate uncertainty from variance
+            uncertainty = var_logits.mean(dim=-1)
+            combined_confidence = confidence_score * (1 - uncertainty)
+
+            _, a_t = mean_logits.max(1)
+
             hidden_states.append(h_t)
             for i, ob in enumerate(perm_obs):
                 if not ended[i]:
-                    traj[i]['confidence_scores'].append(confidence_score[i].item())
+                    traj[i]['confidence_scores'].append(combined_confidence[i].item())
 
             # Mask outputs where agent can't move forward
             # Here the logit is [b, max_candidate]
@@ -423,10 +440,27 @@ class Seq2SeqAgent(BaseAgent):
                             'action_feats':       input_a_t,
                             # 'pano_feats':         f_t,
                             'cand_feats':         candidate_feat}
-            last_h_, _, confidence_score = self.vln_bert(**visual_inputs)
+            last_h_, _, confidence_scores = self.vln_bert(**visual_inputs)
+            mc_outputs = self.vln_bert.monte_carlo_forward(**visual_inputs, num_samples=self.vln_bert.mc_dropout_samples)
+            
+            logits = torch.stack([output[1] for output in mc_outputs])
+            mean_logits = logits.mean(dim=0)
+            var_logits = logits.var(dim=0)
+            
+            # Calculate confidence score using predictive entropy
+            probs = F.softmax(mean_logits, dim=-1)
+            entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
+            confidence_score = 1 - (entropy / torch.log(torch.tensor(probs.shape[-1])))
+            
+            # Incorporate uncertainty from variance
+            uncertainty = var_logits.mean(dim=-1)
+            combined_confidence = confidence_score * (1 - uncertainty)
+            
+            _, a_t = mean_logits.max(1)
+            
             for i, ob in enumerate(perm_obs):
                 if not ended[i]:
-                    traj[i]['confidence_scores'].append(confidence_score[i].item())
+                    traj[i]['confidence_scores'].append(combined_confidence[i].item())
 
             rl_loss = 0.
 
