@@ -308,58 +308,89 @@ class Seq2SeqAgent(BaseAgent):
                             'vis_mask':           visual_temp_mask,
                             'token_type_ids':     token_type_ids,
                             'action_feats':       input_a_t,
-                            # 'pano_feats':         f_t,
                             'cand_feats':         candidate_feat}
-            h_t, logit, confidence_scores = self.vln_bert(**visual_inputs)
-            mc_outputs = self.vln_bert.monte_carlo_forward(**visual_inputs, num_samples=self.vln_bert.mc_dropout_samples)
-            
-            logits = torch.stack([output[1] for output in mc_outputs])
-            mean_logits = logits.mean(dim=0)
-            var_logits = logits.var(dim=0)
-            
-            # Calculate confidence score using predictive entropy
-            probs = F.softmax(mean_logits, dim=-1)
-            entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
-            confidence_score = 1 - (entropy / torch.log(torch.tensor(probs.shape[-1])))
-            
-            # Incorporate uncertainty from variance
-            uncertainty = var_logits.mean(dim=-1)
-            combined_confidence = confidence_score * (1 - uncertainty)
 
-            _, a_t = mean_logits.max(1)
-
-            hidden_states.append(h_t)
-            for i, ob in enumerate(perm_obs):
-                if not ended[i]:
-                    traj[i]['confidence_scores'].append(combined_confidence[i].item())
-
-            # Mask outputs where agent can't move forward
-            # Here the logit is [b, max_candidate]
-            candidate_mask = utils.length2mask(candidate_leng)
-            logit.masked_fill_(candidate_mask, -float('inf'))
-
-            # Supervised training
-            target = self._teacher_action(perm_obs, ended)
-            ml_loss += self.criterion(logit, target)
-
-            # Determine next model inputs
-            if self.feedback == 'teacher':
-                a_t = target                 # teacher forcing
-            elif self.feedback == 'argmax':
-                _, a_t = logit.max(1)        # student forcing - argmax
-                a_t = a_t.detach()
-                log_probs = F.log_softmax(logit, 1)                              # Calculate the log_prob here
-                policy_log_probs.append(log_probs.gather(1, a_t.unsqueeze(1)))   # Gather the log_prob for each batch
-            elif self.feedback == 'sample':
-                probs = F.softmax(logit, 1)  # sampling an action from model
-                c = torch.distributions.Categorical(probs)
-                self.logs['entropy'].append(c.entropy().sum().item())            # For log
-                entropys.append(c.entropy())                                     # For optimization
-                a_t = c.sample().detach()
-                policy_log_probs.append(c.log_prob(a_t))
+            if self.feedback == 'argmax':
+                # Use Monte Carlo dropout for confidence estimation
+                mc_outputs = self.vln_bert.monte_carlo_forward(**visual_inputs)
+                
+                # Stack outputs
+                h_ts = torch.stack([output[0] for output in mc_outputs])
+                logits = torch.stack([output[1] for output in mc_outputs])
+                
+                # Calculate mean and variance
+                h_t = h_ts.mean(dim=0)
+                mean_logits = logits.mean(dim=0)
+                var_logits = logits.var(dim=0)
+                
+                # Calculate confidence score using predictive entropy
+                probs = F.softmax(mean_logits, dim=-1)
+                entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
+                confidence_score = 1 - (entropy / torch.log(torch.tensor(probs.shape[-1], device=probs.device)))
+                
+                # Incorporate uncertainty from variance
+                uncertainty = var_logits.mean(dim=-1)
+                combined_confidence = confidence_score * (1 - uncertainty)
+                
+                logit = mean_logits
             else:
-                print(self.feedback)
-                sys.exit('Invalid feedback option')
+                h_t, logit, _ = self.vln_bert(**visual_inputs)
+                combined_confidence = None
+            
+            # Store confidence scores
+            if not ended[i]:
+                traj[i]['confidence_scores'].append(combined_confidence[i].item() if combined_confidence is not None else 0.0)
+
+            # h_t, logit, confidence_scores = self.vln_bert(**visual_inputs)
+            # mc_outputs = self.vln_bert.monte_carlo_forward(**visual_inputs, num_samples=self.vln_bert.mc_dropout_samples)
+            
+            # logits = torch.stack([output[1] for output in mc_outputs])
+            # mean_logits = logits.mean(dim=0)
+            # var_logits = logits.var(dim=0)
+            
+            # # Calculate confidence score using predictive entropy
+            # probs = F.softmax(mean_logits, dim=-1)
+            # entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
+            # confidence_score = 1 - (entropy / torch.log(torch.tensor(probs.shape[-1])))
+            
+            # # Incorporate uncertainty from variance
+            # uncertainty = var_logits.mean(dim=-1)
+            # combined_confidence = confidence_score * (1 - uncertainty)
+
+            # _, a_t = mean_logits.max(1)
+
+            # hidden_states.append(h_t)
+            # for i, ob in enumerate(perm_obs):
+            #     if not ended[i]:
+            #         traj[i]['confidence_scores'].append(combined_confidence[i].item())
+
+            # # Mask outputs where agent can't move forward
+            # # Here the logit is [b, max_candidate]
+            # candidate_mask = utils.length2mask(candidate_leng)
+            # logit.masked_fill_(candidate_mask, -float('inf'))
+
+            # # Supervised training
+            # target = self._teacher_action(perm_obs, ended)
+            # ml_loss += self.criterion(logit, target)
+
+            # # Determine next model inputs
+            # if self.feedback == 'teacher':
+            #     a_t = target                 # teacher forcing
+            # elif self.feedback == 'argmax':
+            #     _, a_t = logit.max(1)        # student forcing - argmax
+            #     a_t = a_t.detach()
+            #     log_probs = F.log_softmax(logit, 1)                              # Calculate the log_prob here
+            #     policy_log_probs.append(log_probs.gather(1, a_t.unsqueeze(1)))   # Gather the log_prob for each batch
+            # elif self.feedback == 'sample':
+            #     probs = F.softmax(logit, 1)  # sampling an action from model
+            #     c = torch.distributions.Categorical(probs)
+            #     self.logs['entropy'].append(c.entropy().sum().item())            # For log
+            #     entropys.append(c.entropy())                                     # For optimization
+            #     a_t = c.sample().detach()
+            #     policy_log_probs.append(c.log_prob(a_t))
+            # else:
+            #     print(self.feedback)
+            #     sys.exit('Invalid feedback option')
             # Prepare environment action
             # NOTE: Env action is in the perm_obs space
             cpu_a_t = a_t.cpu().numpy()

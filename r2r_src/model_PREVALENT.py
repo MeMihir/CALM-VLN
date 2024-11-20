@@ -33,31 +33,39 @@ class VLNBERT(nn.Module):
         self.state_proj = nn.Linear(hidden_size*2, hidden_size, bias=True)
         self.state_LayerNorm = BertLayerNorm(hidden_size, eps=layer_norm_eps)
         # self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.mc_dropout_samples = 5  # Number of MC dropout samples
+        self.mc_dropout_samples = 10  # Number of MC dropout samples
+        self.mc_dropout = False  # Flag to control MC dropout
 
         
     def enable_dropout(self):
+        """Enable dropout during inference"""
         for module in self.modules():
             if isinstance(module, nn.Dropout):
                 module.train()
     
     def monte_carlo_forward(self, mode, sentence, token_type_ids=None,
-                            attention_mask=None, lang_mask=None, vis_mask=None,
-                            position_ids=None, action_feats=None, pano_feats=None, cand_feats=None,
-                            num_samples=10):
+                          attention_mask=None, lang_mask=None, vis_mask=None,
+                          position_ids=None, action_feats=None, pano_feats=None, cand_feats=None):
+        """Perform multiple forward passes with dropout enabled"""
+        self.mc_dropout = True
         self.enable_dropout()
+        
         outputs = []
-        for _ in range(num_samples):
-            output = self.forward(mode, sentence, token_type_ids, attention_mask, lang_mask, vis_mask,
-                                position_ids, action_feats, pano_feats, cand_feats)
-            outputs.append(output)
+        with torch.no_grad():
+            for _ in range(self.mc_dropout_samples):
+                output = self.forward(mode, sentence, token_type_ids, attention_mask, 
+                                    lang_mask, vis_mask, position_ids, action_feats, 
+                                    pano_feats, cand_feats)
+                outputs.append(output)
+        
+        self.mc_dropout = False
         return outputs
 
     def forward(self, mode, sentence, token_type_ids=None,
                 attention_mask=None, lang_mask=None, vis_mask=None,
                 position_ids=None, action_feats=None, pano_feats=None, cand_feats=None):
 
-        if hasattr(self, 'mc_dropout') and self.mc_dropout:
+        if self.mc_dropout:
             self.enable_dropout()
 
         if mode == 'language':

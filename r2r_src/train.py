@@ -106,7 +106,7 @@ def train(train_env, tok, n_iters, log_every=2000, val_envs={}, aug_env=None):
             listner.env = env
 
             # Get validation distance from goal under test evaluation conditions
-            listner.test(use_dropout=False, feedback='argmax', iters=None)
+            listner.test(use_dropout=True, feedback='argmax', iters=None)
             result = listner.get_results()
             score_summary, _ = evaluator.score(result)
             loss_str += ", %s " % env_name
@@ -159,7 +159,7 @@ def valid(train_env, tok, val_envs={}):
         agent.env = env
 
         iters = None
-        agent.test(use_dropout=False, feedback='argmax', iters=iters)
+        agent.test(use_dropout=True, feedback='argmax', iters=iters)
         result = agent.get_results()
 
         if env_name != '':
