@@ -228,22 +228,25 @@ class Seq2SeqAgent(BaseAgent):
                     traj[i]['path'].append((state.location.viewpointId, state.heading, state.elevation))
 
     # 2. Combine multiple uncertainty metrics
-    def calculate_confidence(logits, var_logits):
+    def calculate_confidence(self, logits):
+        mean_logits = logits.mean(dim=0)  # shape: (batch_size, n_directions)
+        var_logits = logits.var(dim=0)  # shape: (batch_size, n_directions)
+        
         # Entropy-based confidence
-        probs = F.softmax(logits, dim=-1)
-        entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
-        entropy_confidence = 1 - (entropy / torch.log(torch.tensor(probs.shape[-1])))
+        mean_probs = F.softmax(mean_logits, dim=-1)  # shape: (batch_size, n_directions)
+        entropy = -(mean_probs * torch.log(mean_probs + 1e-10)).sum(dim=-1)  # shape: (batch_size,)
+        entropy_confidence = 1 - (entropy / torch.log(torch.tensor(mean_probs.shape[-1], device=logits.device)))
         
         # Variance-based uncertainty
-        uncertainty = var_logits.mean(dim=-1)
+        uncertainty = var_logits.mean(dim=-1)  # shape: (batch_size,)
         
-        # Agreement-based confidence
-        agreement = torch.max(probs, dim=-1)[0]
+        # Agreement-based confidence using mean probabilities
+        agreement = torch.max(mean_probs, dim=-1)[0]  # shape: (batch_size,)
         
         # Combine multiple metrics
-        combined_confidence = (entropy_confidence + (1 - uncertainty) + agreement) / 3
-        return combined_confidence
+        combined_confidence = (entropy_confidence + (1 - uncertainty) + agreement) / 3  # shape: (batch_size,)
         
+        return combined_confidence
 
     def rollout(self, train_ml=None, train_rl=True, reset=True):
         """
@@ -368,9 +371,7 @@ class Seq2SeqAgent(BaseAgent):
 
                 # Calculate confidence score using multiple metrics
                 logits = torch.stack([output[1] for output in mc_outputs])
-                mean_logits = logits.mean(dim=0)
-                var_logits = logits.var(dim=0)
-                combined_confidence = self.calculate_confidence(logits, var_logits)
+                combined_confidence = self.calculate_confidence(logits)
                 
                 # logit = mean_logits
                 _, a_t = logit.max(1)
@@ -382,7 +383,7 @@ class Seq2SeqAgent(BaseAgent):
             # Store confidence scores
             for i, ob in enumerate(perm_obs):
                 if not ended[i]:
-                    traj[i]['confidence_scores'].append(combined_confidence[i].item() if combined_confidence is not None else 0.0)
+                    traj[i]['confidence_scores'].append(combined_confidence[i].item() if combined_confidence is not None else 0)
 
 
             # Prepare environment action
