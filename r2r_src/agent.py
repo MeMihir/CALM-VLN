@@ -227,6 +227,27 @@ class Seq2SeqAgent(BaseAgent):
                 if traj is not None:
                     traj[i]['path'].append((state.location.viewpointId, state.heading, state.elevation))
 
+    # 2. Combine multiple uncertainty metrics
+    def calculate_confidence(self, logits):
+        mean_logits = logits.mean(dim=0)  # shape: (batch_size, n_directions)
+        var_logits = logits.var(dim=0)  # shape: (batch_size, n_directions)
+        
+        # Entropy-based confidence
+        mean_probs = F.softmax(mean_logits, dim=-1)  # shape: (batch_size, n_directions)
+        entropy = -(mean_probs * torch.log(mean_probs + 1e-10)).sum(dim=-1)  # shape: (batch_size,)
+        entropy_confidence = 1 - (entropy / torch.log(torch.tensor(mean_probs.shape[-1], device=logits.device)))
+        
+        # Variance-based uncertainty
+        uncertainty = var_logits.mean(dim=-1)  # shape: (batch_size,)
+        
+        # Agreement-based confidence using mean probabilities
+        agreement = torch.max(mean_probs, dim=-1)[0]  # shape: (batch_size,)
+        
+        # Combine multiple metrics
+        combined_confidence = (entropy_confidence + (1 - uncertainty) + agreement) / 3  # shape: (batch_size,)
+        
+        return combined_confidence
+
     def rollout(self, train_ml=None, train_rl=True, reset=True):
         """
         :param train_ml:    The weight to train with maximum likelihood
@@ -308,41 +329,63 @@ class Seq2SeqAgent(BaseAgent):
                             'vis_mask':           visual_temp_mask,
                             'token_type_ids':     token_type_ids,
                             'action_feats':       input_a_t,
-                            # 'pano_feats':         f_t,
                             'cand_feats':         candidate_feat}
-            h_t, logit, confidence_score = self.vln_bert(**visual_inputs)
-            hidden_states.append(h_t)
+
+            if self.feedback == 'argmax':
+                # Use Monte Carlo dropout for confidence estimation
+                mc_outputs = self.vln_bert.monte_carlo_forward(**visual_inputs)
+
+                # get normal output
+                h_t, logit, _  = self.vln_bert(**visual_inputs)
+                hidden_states.append(h_t)
+
+                candidate_mask = utils.length2mask(candidate_leng)
+                logit.masked_fill_(candidate_mask, -float('inf'))
+
+                target = self._teacher_action(perm_obs, ended)
+                ml_loss += self.criterion(logit, target)
+
+                _, a_t = logit.max(1)
+                a_t = a_t.detach()
+                log_probs = F.log_softmax(logit, 1)
+                policy_log_probs.append(log_probs.gather(1, a_t.unsqueeze(1)))
+                
+                # Calculate confidence score using predictive entropy
+                # Stack outputs
+                # h_ts = torch.stack([output[0] for output in mc_outputs])
+                # logits = torch.stack([output[1] for output in mc_outputs])
+                
+                # # Calculate mean and variance
+                # h_t = h_ts.mean(dim=0)
+                # mean_logits = logits.mean(dim=0)
+                # var_logits = logits.var(dim=0)
+                
+                # # Calculate confidence score using predictive entropy
+                # probs = F.softmax(mean_logits, dim=-1)
+                # entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
+                # confidence_score = 1 - (entropy / torch.log(torch.tensor(probs.shape[-1], device=probs.device)))
+                
+                # # Incorporate uncertainty from variance
+                # uncertainty = var_logits.mean(dim=-1)
+                # combined_confidence = confidence_score * (1 - uncertainty)
+
+                # Calculate confidence score using multiple metrics
+                logits = torch.stack([output[1] for output in mc_outputs])
+                combined_confidence = self.calculate_confidence(logits)
+                
+                # logit = mean_logits
+                _, a_t = logit.max(1)
+            else:
+                h_t, logit, _ = self.vln_bert(**visual_inputs)
+                _, a_t = logit.max(1)
+                combined_confidence = None
+            
+            # Store confidence scores
             for i, ob in enumerate(perm_obs):
                 if not ended[i]:
-                    traj[i]['confidence_scores'].append(confidence_score[i].item())
+                    traj[i]['confidence_scores'].append(combined_confidence[i].item() if combined_confidence is not None else 0)
 
-            # Mask outputs where agent can't move forward
-            # Here the logit is [b, max_candidate]
-            candidate_mask = utils.length2mask(candidate_leng)
-            logit.masked_fill_(candidate_mask, -float('inf'))
 
-            # Supervised training
-            target = self._teacher_action(perm_obs, ended)
-            ml_loss += self.criterion(logit, target)
-
-            # Determine next model inputs
-            if self.feedback == 'teacher':
-                a_t = target                 # teacher forcing
-            elif self.feedback == 'argmax':
-                _, a_t = logit.max(1)        # student forcing - argmax
-                a_t = a_t.detach()
-                log_probs = F.log_softmax(logit, 1)                              # Calculate the log_prob here
-                policy_log_probs.append(log_probs.gather(1, a_t.unsqueeze(1)))   # Gather the log_prob for each batch
-            elif self.feedback == 'sample':
-                probs = F.softmax(logit, 1)  # sampling an action from model
-                c = torch.distributions.Categorical(probs)
-                self.logs['entropy'].append(c.entropy().sum().item())            # For log
-                entropys.append(c.entropy())                                     # For optimization
-                a_t = c.sample().detach()
-                policy_log_probs.append(c.log_prob(a_t))
-            else:
-                print(self.feedback)
-                sys.exit('Invalid feedback option')
             # Prepare environment action
             # NOTE: Env action is in the perm_obs space
             cpu_a_t = a_t.cpu().numpy()
@@ -423,10 +466,7 @@ class Seq2SeqAgent(BaseAgent):
                             'action_feats':       input_a_t,
                             # 'pano_feats':         f_t,
                             'cand_feats':         candidate_feat}
-            last_h_, _, confidence_score = self.vln_bert(**visual_inputs)
-            for i, ob in enumerate(perm_obs):
-                if not ended[i]:
-                    traj[i]['confidence_scores'].append(confidence_score[i].item())
+            last_h_, _ = self.vln_bert(**visual_inputs)
 
             rl_loss = 0.
 
@@ -442,9 +482,9 @@ class Seq2SeqAgent(BaseAgent):
             total = 0
             for t in range(length-1, -1, -1):
                 discount_reward = discount_reward * args.gamma + rewards[t]  # If it ended, the reward will be 0
-                mask_ = Variable(torch.from_numpy(masks[t]), requires_grad=False).to(self.device)
+                mask_ = Variable(torch.from_numpy(masks[t]), requires_grad=False).cuda()
                 clip_reward = discount_reward.copy()
-                r_ = Variable(torch.from_numpy(clip_reward), requires_grad=False).to(self.device)
+                r_ = Variable(torch.from_numpy(clip_reward), requires_grad=False).cuda()
                 v_ = self.critic(hidden_states[t])
                 a_ = (r_ - v_).detach()
 
@@ -483,12 +523,12 @@ class Seq2SeqAgent(BaseAgent):
     def test(self, use_dropout=False, feedback='argmax', allow_cheat=False, iters=None):
         ''' Evaluate once on each instruction in the current environment '''
         self.feedback = feedback
-        if use_dropout:
-            self.vln_bert.train()
-            self.critic.train()
-        else:
-            self.vln_bert.eval()
-            self.critic.eval()
+        # if use_dropout:
+        #     self.vln_bert.train()
+        #     self.critic.train()
+        # else:
+        self.vln_bert.eval()
+        self.critic.eval()
         super(Seq2SeqAgent, self).test(iters)
 
     def zero_grad(self):
